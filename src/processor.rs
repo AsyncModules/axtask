@@ -34,6 +34,9 @@ pub struct Processor {
     idle_task: AxTaskRef,
     /// The gc task of the processor
     gc_task: AxTaskRef,
+    #[cfg(feature = "future")]
+    /// The stack pool of the processor
+    stack_pool: SpinNoIrq<crate::stack_pool::StackPool>,
 }
 
 unsafe impl Sync for Processor {}
@@ -50,15 +53,18 @@ impl Processor {
             #[cfg(feature = "monolithic")]
             0,
         );
-
+        let mut scheduler = Scheduler::new();
+        scheduler.init();
         Processor {
-            scheduler: SpinNoIrq::new(Scheduler::new()),
+            scheduler: SpinNoIrq::new(scheduler),
             idle_task,
             prev_ctx_save: SpinNoIrq::new(PrevCtxSave::new_empty()),
             exited_tasks: SpinNoIrq::new(VecDeque::new()),
             gc_wait: WaitQueue::new(),
             task_nr: AtomicUsize::new(0),
             gc_task: gc_task,
+            #[cfg(feature = "future")]
+            stack_pool: SpinNoIrq::new(crate::stack_pool::StackPool::new()),
         }
     }
 
@@ -197,6 +203,22 @@ impl Processor {
             .iter()
             .min_by_key(|p| p.task_nr.load(Ordering::Acquire))
             .unwrap()
+    }
+}
+
+#[cfg(feature = "future")]
+impl Processor {    
+
+    #[inline]
+    /// Pick current stack
+    pub fn alloc_stack(&self) -> taskctx::TaskStack {
+        self.stack_pool.lock().alloc()
+    }
+
+    #[inline]
+    /// Recycle stack
+    pub fn recycle_stack(&self, stack: taskctx::TaskStack) {
+        self.stack_pool.lock().recycle(stack)
     }
 }
 

@@ -65,6 +65,8 @@ impl WaitTaskList {
     /// add wait to list back
     pub fn prepare_to_wait(&mut self, task: Arc<WaitTaskNode>) {
         task.inner().set_state(TaskState::Blocking);
+        #[cfg(feature = "future")]
+        task.set_ctx_type(taskctx::ContextType::THREAD);
         self.list.push_back(task);
     }
 

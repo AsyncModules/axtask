@@ -53,6 +53,13 @@ cfg_if::cfg_if! {
         #[doc(cfg(feature = "multitask"))]
         pub use self::api::*;
         pub use self::api::{sleep, sleep_until, yield_now};
+        
+        #[cfg(feature = "future")]
+        mod stack_pool;
+        #[cfg(feature = "future")]
+        mod waker;
+        #[cfg(feature = "future")]
+        pub use taskctx::ContextType;
 
     } else {
         mod api_s;

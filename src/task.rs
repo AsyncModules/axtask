@@ -2,6 +2,7 @@ use alloc::{string::String, sync::Arc};
 
 use core::{mem::ManuallyDrop, ops::Deref};
 
+#[cfg(not(feature = "future"))]
 use alloc::boxed::Box;
 
 use memory_addr::VirtAddr;
@@ -140,6 +141,7 @@ impl Deref for ScheduleTask {
     }
 }
 
+#[cfg(not(feature = "future"))]
 #[cfg(feature = "monolithic")]
 /// Create a new task.
 ///
@@ -196,6 +198,7 @@ where
     axtask
 }
 
+#[cfg(not(feature = "future"))]
 #[cfg(not(feature = "monolithic"))]
 /// Create a new task.
 ///
@@ -302,6 +305,7 @@ impl Deref for CurrentTask {
     }
 }
 
+#[cfg(not(feature = "future"))]
 extern "C" fn task_entry() -> ! {
     // SAFETY: INIT when switch_to
     // First into task entry, manually perform the subsequent work of switch_to
@@ -333,4 +337,97 @@ extern "C" fn task_entry() -> ! {
     }
     // only for kernel task
     crate::exit(0);
+}
+
+#[cfg(feature = "future")]
+/// Create a new task.
+///
+/// # Arguments
+/// - `entry`: The entry function of the task.
+/// - `name`: The name of the task.
+/// - `stack_size`: The size of the kernel stack.
+pub fn new_task<F>(
+    entry: F, 
+    name: String, 
+    stack_size: usize,
+    #[cfg(feature = "monolithic")] process_id: u64,
+    #[cfg(feature = "monolithic")] page_table_token: usize,
+) -> AxTaskRef
+where
+    F: FnOnce() + Send + 'static,
+{
+    let mut task = taskctx::TaskInner::new(
+        || async { entry(); 0 },
+        name,
+        stack_size,
+        #[cfg(feature = "monolithic")] process_id,
+        #[cfg(feature = "monolithic")] page_table_token,
+        #[cfg(feature = "tls")]
+        tls_area(),
+    );
+    #[cfg(feature = "tls")]
+    let _tls = VirtAddr::from(task.get_tls_ptr());
+    #[cfg(not(feature = "tls"))]
+    let _tls = VirtAddr::from(0);
+
+    task.init_task_ctx(
+        task_entry as usize,
+        0.into(),
+        _tls,
+    );
+    // a new task start, irq should be enabled by default
+    let axtask = Arc::new(AxTask::new(ScheduleTask::new(task, true)));
+    
+    add_wait_for_exit_queue(&axtask);
+    axtask
+}
+
+#[cfg(feature = "future")]
+pub(crate) extern "C" fn task_entry() -> ! {
+    current_processor().switch_post();
+    let curr = crate::current();
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "monolithic")] {
+            use axhal::KERNEL_PROCESS_ID;
+            if curr.get_process_id() == KERNEL_PROCESS_ID {
+                run_coroutine(curr.clone());
+            } else {
+                // 需要通过切换特权级进入到对应的应用程序
+                let kernel_sp = curr.get_kernel_stack_top().unwrap();
+                // 切换页表已经在switch实现了
+                // 记得更新时间
+                curr.time_stat_from_kernel_to_user(axhal::time::current_time_nanos() as usize);
+                axhal::arch::first_into_user(kernel_sp);
+            }
+        } else {
+            run_coroutine(curr.clone());
+        }
+    }
+    // only for kernel coroutine task
+    #[cfg(not(feature = "monolithic"))]
+    let sp = curr.get_kernel_stack_top().unwrap();
+    #[cfg(feature = "monolithic")]
+    let sp = curr.get_kernel_stack_top().unwrap() - core::mem::size_of::<TrapFrame>();
+    unsafe { taskctx::jump(crate::schedule as usize, sp); }
+    unreachable!("task_entry will never return");
+}
+
+#[cfg(feature = "future")]
+fn run_coroutine(task: AxTaskRef) {
+    use core::task::{Context, Poll};
+    let waker = crate::waker::waker_from_task(task.clone());
+    unsafe {
+        let ctx = &mut *task.ctx_mut_ptr();
+        let fut = &mut (*ctx.fut.as_mut_ptr());
+        if let Poll::Ready(exit_code) = fut.as_mut().poll(&mut Context::from_waker(&waker)) {
+            task.set_ctx_type(taskctx::ContextType::COROUTINE);
+            debug!("task exit: {}, exit_code={}", task.id_name(), exit_code);
+            task.set_state(TaskState::Exited);
+            crate::schedule::notify_wait_for_exit(&task);
+            current_processor().kick_exited_task(&task);
+            task.set_exit_code(exit_code);
+        } else {
+            todo!("task do not support coroutine pending");
+        }
+    }
 }

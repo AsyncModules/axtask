@@ -11,7 +11,7 @@ documentation = "https://rcore-os.github.io/arceos/axtask/index.html"
 keywords = ["Starry"]
 
 [features]
-default = []
+default = ["future", "sched_moic"]
 
 multitask = [
     "dep:percpu", "dep:spinlock", "dep:lazy_init", "dep:memory_addr",
@@ -24,10 +24,13 @@ preempt = ["irq", "percpu?/preempt", "kernel_guard/preempt", "taskctx/preempt"]
 sched_fifo = ["multitask"]
 sched_rr = ["multitask", "preempt"]
 sched_cfs = ["multitask", "preempt"]
+sched_moic = ["multitask"]
 
 test = ["percpu?/sp-naive"]
 
 monolithic = ["multitask", "axhal/monolithic", "taskctx/monolithic"]
+
+future = ["taskctx/future"]
 
 [dependencies]
 cfg-if = "1.0"

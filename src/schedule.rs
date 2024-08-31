@@ -7,6 +7,11 @@ use crate::task::{CurrentTask, TaskState};
 use crate::{AxTaskRef, WaitQueue};
 use spinlock::{SpinNoIrq, SpinNoIrqOnlyGuard};
 
+#[cfg(feature = "future")]
+use taskctx::ContextType;
+#[cfg(all(feature = "future", feature = "monolithic"))]
+use axhal::arch::TrapFrame;
+
 /// A map to store tasks' wait queues, which stores tasks that are waiting for this task to exit.
 pub(crate) static WAIT_FOR_TASK_EXITS: SpinNoIrq<BTreeMap<u64, Arc<WaitQueue>>> =
     SpinNoIrq::new(BTreeMap::new());
@@ -53,6 +58,8 @@ pub(crate) fn yield_current() {
     let curr = crate::current();
     assert!(curr.is_runable());
     trace!("task yield: {}", curr.id_name());
+    #[cfg(feature = "future")]
+    curr.set_ctx_type(taskctx::ContextType::THREAD);
     schedule();
 }
 
@@ -62,6 +69,8 @@ pub fn schedule_timeout(deadline: axhal::time::TimeValue) -> bool {
     debug!("task sleep: {}, deadline={:?}", curr.id_name(), deadline);
     assert!(!curr.is_idle());
     crate::timers::set_alarm_wakeup(deadline, curr.clone());
+    #[cfg(feature = "future")]
+    curr.set_ctx_type(taskctx::ContextType::THREAD);
     schedule();
     let timeout = axhal::time::current_time() >= deadline;
     // may wake up by others
@@ -211,9 +220,28 @@ fn switch_to(mut next_task: AxTaskRef) {
 
         current_processor().set_prev_ctx_save(prev_ctx);
 
+        #[cfg(feature = "future")]
+        match (prev_task.get_ctx_type(), next_task.get_ctx_type()) {
+            (ContextType::COROUTINE, ContextType::COROUTINE) => {
+                let stack = prev_task.pick_occupied_stack();
+                next_task.set_occupied_stack(stack, #[cfg(feature = "monolithic")] core::mem::size_of::<TrapFrame>());
+            }
+            (ContextType::COROUTINE, ContextType::THREAD) => {
+                current_processor().recycle_stack(prev_task.pick_occupied_stack());
+            }
+            (ContextType::THREAD, taskctx::ContextType::COROUTINE) => {
+                let stack = current_processor().alloc_stack();
+                next_task.set_occupied_stack(stack, #[cfg(feature = "monolithic")] core::mem::size_of::<TrapFrame>());
+            }
+            _ => {}
+        }
+
         CurrentTask::set_current(prev_task, next_task);
 
+        #[cfg(not(feature = "future"))]
         axhal::arch::task_context_switch(&mut (*prev_ctx_ptr), &(*next_ctx_ptr));
+        #[cfg(feature = "future")]
+        taskctx::switch(&mut (*prev_ctx_ptr), &mut (*next_ctx_ptr), || crate::task::task_entry());
 
         current_processor().switch_post();
 
