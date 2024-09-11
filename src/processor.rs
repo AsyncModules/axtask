@@ -105,10 +105,15 @@ impl Processor {
     #[inline]
     /// Pick one task from processor
     pub(crate) fn pick_next_task(&self) -> AxTaskRef {
-        self.scheduler
-            .lock()
-            .pick_next_task()
-            .unwrap_or_else(|| self.idle_task.clone())
+        // self.scheduler
+        //     .lock()
+        //     .pick_next_task()
+        //     .unwrap_or_else(|| self.idle_task.clone())
+        if let Some(task) = self.scheduler.lock().pick_next_task() {
+            return task;
+        }
+        let p = Processor::select_heavy_processor();
+        p.scheduler.lock().pick_next_task().unwrap_or_else(|| self.idle_task.clone())
     }
 
     #[inline]
@@ -163,6 +168,7 @@ impl Processor {
                 false => axhal::arch::disable_irqs(),
             }
         }
+        crate::schedule::sched_unlock();
     }
 
     #[inline]
@@ -202,6 +208,16 @@ impl Processor {
             .lock()
             .iter()
             .min_by_key(|p| p.task_nr.load(Ordering::Acquire))
+            .unwrap()
+    }
+
+    #[inline]
+    /// Add task to processor
+    fn select_heavy_processor() -> &'static Processor {
+        PROCESSORS
+            .lock()
+            .iter()
+            .max_by_key(|p| p.task_nr.load(Ordering::Acquire))
             .unwrap()
     }
 }

@@ -11,7 +11,7 @@ documentation = "https://rcore-os.github.io/arceos/axtask/index.html"
 keywords = ["Starry"]
 
 [features]
-default = ["future"]
+default = []
 
 multitask = [
     "dep:percpu", "dep:spinlock", "dep:lazy_init", "dep:memory_addr",

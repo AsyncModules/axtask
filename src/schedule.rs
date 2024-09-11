@@ -92,6 +92,7 @@ pub fn set_current_priority(prio: isize) -> bool {
 }
 
 pub fn wakeup_task(task: AxTaskRef) {
+    sched_lock();
     let mut state = task.state_lock_manual();
     match **state {
         TaskState::Blocking => **state = TaskState::Runable,
@@ -102,15 +103,18 @@ pub fn wakeup_task(task: AxTaskRef) {
             ManuallyDrop::into_inner(state);
             // may be other processor wake up
             Processor::add_task(task.clone());
+            sched_unlock();
             return;
         }
         _ => panic!("try to wakeup {:?} unexpect state {:?}",
             task.id(), **state),
     }
     ManuallyDrop::into_inner(state);
+    sched_unlock();
 }
 
 pub fn schedule() {
+    sched_lock();
     let next_task = current_processor().pick_next_task();
     switch_to(next_task);
 }
@@ -175,6 +179,7 @@ fn switch_to(mut next_task: AxTaskRef) {
 
     if prev_task.ptr_eq(&next_task) {
         ManuallyDrop::into_inner(prev_state_lock);
+        sched_unlock();
         return;
     }
 
@@ -245,5 +250,22 @@ fn switch_to(mut next_task: AxTaskRef) {
 
         current_processor().switch_post();
 
+    }
+}
+
+static mut SCHED_LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
+static mut SCHED_LOCK_STATE: Option<ManuallyDrop<spinlock::SpinNoIrqGuard<'static, ()>>> = None;
+
+fn sched_lock() {
+    unsafe {
+        SCHED_LOCK_STATE = Some(ManuallyDrop::new(SCHED_LOCK.lock()));
+    }
+}
+
+pub(crate) fn sched_unlock() {
+    unsafe {
+        if let Some(lock) = SCHED_LOCK_STATE.take() {
+            ManuallyDrop::into_inner(lock);
+        }
     }
 }
